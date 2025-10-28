@@ -1,0 +1,19 @@
+--- Environment / Project Config ---
+
+config.py
+.env
+
+--- Generated Output Files ---
+
+*.log
+scraper.log
+failed_urls.csv
+scraper_results.db
+.sqlite
+final_report_.csv
+
+--- Python ---
+
+pycache/
+.pytest_cache/
+venv/
