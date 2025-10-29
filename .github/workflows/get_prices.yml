@@ -1,0 +1,80 @@
+name: Get Prices
+
+on:
+  schedule:
+    - cron: '0 7 * * *'  # Run once a day at 7AM UTC
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: 'Limit number of URLs to process (optional)'
+        required: false
+        type: number
+      cron:
+        description: 'Enable cron mode (adds random delay)'
+        required: false
+        type: boolean
+        default: false
+
+
+jobs:
+  update-db:
+    runs-on: ubuntu-latest
+    environment: the-env
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Playwright browsers
+        run: playwright install
+
+      # 1. RESTORE: Get the database from the last successful run
+      - name: Restore DuckDB Cache
+        id: cache-db
+        uses: actions/cache/restore@v4
+        with:
+          path: data/prices.duckdb
+          # Use a static key with a fallback to the most recent match
+          key: duckdb-price-storage-${{ github.run_id }}
+          restore-keys: |
+            duckdb-price-storage-
+      # 2. RUN: Your scraper updates the 'data/prices.duckdb' file
+      - name: Run update script
+        env:
+          BASE_URL: ${{ secrets.BASE_URL }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            ARGS=""
+            if [ -n "${{ inputs.limit }}" ]; then
+              ARGS="$ARGS --limit ${{ inputs.limit }}"
+            fi
+            if [ "${{ inputs.cron }}" = "true" ]; then
+              ARGS="$ARGS --cron"
+            fi
+            python run_cli.py $ARGS
+          else
+            python run_cli.py --cron
+          fi
+      # 3. SAVE: Put the updated database back into the cache for next run
+      - name: Save DuckDB Cache
+        uses: actions/cache/save@v4
+        with:
+          path: data/prices.duckdb
+          key: duckdb-price-storage-${{ github.run_id }}
+
+      # 4. ARTIFACT: Make the DB downloadable from the "Actions" tab
+      # This allows you to download it locally to extend/analyze it.
+      - name: Upload Database Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: duckdb-database-file
+          path: data/prices.duckdb
+          retention-days: 7 # Kept for a week so I have time to download it

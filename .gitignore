@@ -11,9 +11,18 @@ failed_urls.csv
 scraper_results.db
 .sqlite
 final_report_.csv
+.vscode/
+data/
+
 
 --- Python ---
 
+__pycache__/
 pycache/
 .pytest_cache/
+browser_data/
 venv/
+
+--- Other (also input) files ---
+*.csv
+output/
