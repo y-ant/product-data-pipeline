@@ -40,6 +40,17 @@ MAX_PAGE_RETRIES = 2 # Retries for the listing (link collection) page
 # Resource Blocking
 BLOCK_RESOURCES = {'image', 'font', 'stylesheet', 'media'} # Empty this set in config.py if the site requires these resources
 
+# Domains to block for performance optimization
+BLOCKED_DOMAINS = [
+    '*helpcrunch.com*',  # Chat widget
+    '*google-analytics.com*',  # Analytics
+    '*facebook.com*',  # Social media
+    '*doubleclick.net*',  # Ads
+    '*hotjar.com*',  # Analytics
+    '*clarity.ms*',  # Analytics
+    '*yandex.ru*',  # Analytics
+]
+
 # Scrolling for dynamic loading (on listing pages)
 SCROLL_ATTEMPTS = 5
 SCROLL_PAUSE = 1.0 # Seconds between scroll attempts
@@ -61,3 +72,5 @@ BRAND_PAGE = "https://example.com/category/all-products"
 
 # Target brand to scrape (override in config.py)
 TARGET_BRAND = "Example Brand"  # This should be the exact brand name as it appears in JSON-LD
+DEBUG_MODE = False
+CONCURRENCY_LIMIT = 5

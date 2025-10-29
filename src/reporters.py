@@ -1,3 +1,4 @@
+from datetime import datetime
 import logging
 import csv
 from typing import List, Tuple
@@ -40,9 +41,9 @@ def upload_to_google_sheets(records: List[FinalProductRecord], service_account_j
     # Example: sheet.append_rows(...)
     pass
 
-def log_failed_urls(failed_urls: List[Tuple[str, str, str]]) -> None:
+def log_failed_urls(failed_urls: List[Tuple[str, str, str]], filename_y: str) -> None:
     """Logs the final list of failed/fallback URLs to a separate CSV."""
-    with open(FAILED_URLS_FILE, 'w', newline='', encoding='utf-8') as f:
+    with open(f"{FAILED_URLS_FILE}_{filename_y}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv", 'w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
         writer.writerow(["URL", "Reason", "Details"])
         writer.writerows(failed_urls)
