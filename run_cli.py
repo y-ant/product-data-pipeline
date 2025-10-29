@@ -7,21 +7,16 @@ from datetime import datetime
 
 from playwright.async_api import async_playwright, Page
 
+# Import configuration from settings
+from settings import *
+
 # Import logic from the modular structure
-from generic_config import LOG_FILENAME, LOG_LEVEL, DB_FILENAME
 from src.extraction import (
     collect_product_urls, scrape_single_product, filter_scraped_data, _block_resources
 )
 from src.loader import setup_database, insert_data
-from src.reporters import generate_csv_report, read_skus_from_file
+from src.reporters import generate_csv_report, read_skus_from_file, log_failed_urls
 from src.models import ScrapedItem
-
-# Attempt to load private config, otherwise use generic placeholders
-try:
-    from config import * # Load actual BASE_URL, BRAND_PAGE, etc.
-    print("Loaded private config.py")
-except ImportError:
-    print("Warning: Using generic_config.py placeholders. Create config.py for real run.")
 
 # Set up logging using Pathlib
 logging.basicConfig(
@@ -57,6 +52,13 @@ async def run_scrape_pipeline(max_pages: int = -1, use_sku_filter: bool = False)
             browser = await pw.chromium.launch(headless=True)
             page = await browser.new_page()
             await _block_resources(page)
+            
+            # Initial navigation to the brand page
+            try:
+                await page.goto(BRAND_PAGE, wait_until="domcontentloaded", timeout=PAGE_LOAD_TIMEOUT)
+            except Exception as e:
+                logger.error(f"Failed to load initial page {BRAND_PAGE}: {e}")
+                return
 
             # 2. Extraction: URL Collection
             max_pages_to_collect = -1 if use_sku_filter else max_pages
@@ -78,7 +80,6 @@ async def run_scrape_pipeline(max_pages: int = -1, use_sku_filter: bool = False)
                 
                 # --- This is where we would implement a concurrent worker pool for parallel scraping ---
                 prod_item = await scrape_single_product(page, url, failed_log_data, stop_flag)
-
                 if prod_item:
                     all_scraped_items.append(prod_item)
                 
@@ -96,6 +97,11 @@ async def run_scrape_pipeline(max_pages: int = -1, use_sku_filter: bool = False)
             
             # 5. Reporting (D)
             generate_csv_report(final_records, DB_FILENAME.parent / f"final_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
+            
+            # 6. Log failed URLs
+            if failed_log_data:
+                logger.info(f"Logging {len(failed_log_data)} failed URLs")
+                log_failed_urls(failed_log_data)
             # reporters.upload_to_google_sheets(final_records, "PREFECT_SECRET_KEY") # Placeholder
             
             logger.info("Pipeline completed successfully.")
@@ -109,9 +115,10 @@ if __name__ == "__main__":
     if not os.path.exists("skus_input.csv"):
         with open("skus_input.csv", 'w', newline='', encoding='utf-8') as f:
             f.write("# One SKU per line\n# 1234567\n# 98-7654-3210")
-            
-    # Example execution: Scrape the first 5 pages, no SKU filter
+    N = 1
+
+    logger.info(f"Example execution: Scrape the first {N} pages, no SKU filter")
     try:
-        asyncio.run(run_scrape_pipeline(max_pages=2, use_sku_filter=False))
+        asyncio.run(run_scrape_pipeline(max_pages=N, use_sku_filter=False))
     except KeyboardInterrupt:
         logger.warning("Pipeline manually interrupted.")

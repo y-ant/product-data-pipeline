@@ -21,6 +21,7 @@ def setup_database(db_path: Path = DB_FILENAME, table_name: str = DB_TABLE_NAME)
             CREATE TABLE IF NOT EXISTS {table_name} (
                 normalized_sku TEXT PRIMARY KEY,
                 price REAL NOT NULL,
+                price_old REAL DEFAULT 0,
                 availability_code TEXT,
                 url TEXT NOT NULL,
                 timestamp TEXT NOT NULL,
@@ -48,14 +49,15 @@ def insert_data(records: List[FinalProductRecord], db_path: Path = DB_FILENAME, 
         
         sql = f"""
             REPLACE INTO {table_name} 
-            (normalized_sku, price, availability_code, url, timestamp, detection_status) 
-            VALUES (?, ?, ?, ?, ?, ?)
+            (normalized_sku, price, price_old, availability_code, url, timestamp, detection_status) 
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         """
         
         data_to_insert = [
             (
                 r.normalized_sku, 
-                r.price, 
+                r.price,
+                r.price_old,
                 r.availability_code, 
                 r.url, 
                 r.timestamp.isoformat(), 

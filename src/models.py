@@ -16,6 +16,7 @@ class ScrapedItem:
     """Represents a single scraped item, used before the filter/loader steps."""
     sku_raw: str
     price_raw: str
+    price_old_raw: str  # Added field for old price
     availability_raw: str
     url: str
     timestamp: datetime
@@ -28,6 +29,7 @@ class FinalProductRecord:
     """Represents a product record after normalization and ready for database insertion."""
     normalized_sku: str
     price: float
+    price_old: float  # Added field for normalized old price
     availability_code: str
     url: str
     timestamp: datetime
