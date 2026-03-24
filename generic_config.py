@@ -24,7 +24,6 @@ for folder in [INPUT_DIR, OUTPUT_DIR, DATA_DIR]:
 
 URL_LIST_PATH = INPUT_DIR / "url_list.txt"
 FAILED_URLS_FILE = OUTPUT_DIR / "failed_urls"  # Base filename for failed URLs (will be timestamped)
-# DB_FILENAME = DATA_DIR / "scraped_data.db"
 # SKU_FILE_NAME = INPUT_DIR / "skus.txt"
 DB_FILENAME = DATA_DIR / "prices.duckdb"
 LOG_LEVEL = logging.ERROR  # Set to ERROR to minimize log noise, can be overridden in config_not_needed_anymore.py
