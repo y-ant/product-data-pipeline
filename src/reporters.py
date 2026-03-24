@@ -6,17 +6,23 @@ from pathlib import Path
 
 from src.models import FinalProductRecord
 # from settings import FAILED_URLS_FILE, SKU_FILE_NAME
-from generic_config import FAILED_URLS_FILE#, SKU_FILE_NAME, VALID_COLLECTIONS
+from generic_config import FAILED_URLS_FILE, BASE_URL
 
 logger = logging.getLogger(__name__)
+
+def _strip_base_url(url: str) -> str:
+    """Remove BASE_URL prefix from a URL, returning only the relative path."""
+    if BASE_URL and url.startswith(BASE_URL):
+        return url[len(BASE_URL):]
+    return url
 
 def generate_csv_report(records: List[FinalProductRecord], output_path: Path, run_timestamp: str) -> None:
     """Generates a local CSV report of the final, clean data for this run only."""
     with open(output_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["SKU", "Collection", "Price", "Old Price", "Promo Price", "Availability", "URL", "Timestamp", "Detection_Status"])
+        writer.writerow(["SKU", "Price", "Old Price", "Promo Price", "Availability", "URL", "Timestamp", "Detection_Status"])
         writer.writerows([
-            (r.normalized_sku, r.collection, r.price, r.price_old, r.price_promo, r.availability_code, r.url, run_timestamp, r.detection_status)
+            (r.normalized_sku, r.price, r.price_old, r.price_promo, r.availability_code, _strip_base_url(r.url), run_timestamp, r.detection_status)
             for r in records
         ])
     logger.info(f"CSV report saved to {output_path.name} with {len(records)} records.")

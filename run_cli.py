@@ -25,7 +25,7 @@ from src.loader import insert_data
 from src.reporters import log_failed_urls, generate_csv_report
 
 # --- LOGGING SETUP ---
-timestamp = datetime.now().strftime("%Y%m%d")
+timestamp = datetime.now().strftime("%Y_%m_%d_%H_%M")
 log_path = OUTPUT_DIR / f"scrape_{timestamp}.log"
 
 logging.basicConfig(
