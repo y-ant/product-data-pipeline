@@ -15,14 +15,14 @@ from playwright.async_api import async_playwright, Page, BrowserContext
 # Import from configuration
 from generic_config import (
     URL_LIST_PATH, OUTPUT_DIR, DB_FILENAME,
-    CONCURRENCY_LIMIT, PAGE_LOAD_TIMEOUT, LOG_LEVEL,
-    get_random_ua, scrub_url, BASE_URL
+    CONCURRENCY_LIMIT, LOG_LEVEL,
+    get_random_ua, BASE_URL
 )
 
 # Imports from src/
 from src.extraction import scrape_single_product, _block_resources, filter_scraped_data
 from src.loader import insert_data
-from src.reporters import log_failed_urls
+from src.reporters import log_failed_urls, generate_csv_report
 
 # --- LOGGING SETUP ---
 timestamp = datetime.now().strftime("%Y%m%d")
@@ -111,6 +111,10 @@ async def run_scrape_pipeline(limit: int = None):
     logger.info("-" * 30)
     logger.info(f"Pipeline Start | Concurrency: {CONCURRENCY_LIMIT}")
     
+    if not BASE_URL:
+        logger.error("FATAL: BASE_URL environment variable is not set.")
+        return
+    
     if not URL_LIST_PATH.exists():
         logger.error(f"Critical Error: {URL_LIST_PATH} not found.")
         return
@@ -152,7 +156,13 @@ async def run_scrape_pipeline(limit: int = None):
     logger.info(f"Scraping complete. Items found: {len(all_scraped_items)}")
     final_records = filter_scraped_data(all_scraped_items, None)
     insert_data(final_records, str(DB_FILENAME))
-    
+
+    # Generate CSV with this run's prices only
+    csv_filename = f"prices_{timestamp}.csv"
+    csv_path = OUTPUT_DIR / csv_filename
+    generate_csv_report(final_records, csv_path, timestamp)
+    logger.info(f"CSV artifact saved: {csv_path}")
+
     if failed_log_data:
         fail_filename = f"failed_url_list_{timestamp}.csv"
         log_failed_urls(failed_log_data, str(OUTPUT_DIR / fail_filename))
@@ -173,8 +183,14 @@ if __name__ == "__main__":
             
         await run_scrape_pipeline(limit=args.limit)
 
+    success = False
     try:
         asyncio.run(main())
-        logger.info("Scrape pipeline finished successfully.")
+        success = True
     except KeyboardInterrupt:
         logger.warning("Manually interrupted by user.")
+    finally:
+        if success:
+            logger.info("Scrape pipeline finished successfully.")
+        else:
+            logger.info("Scrape pipeline finished with interruption or error. Check logs for details.")

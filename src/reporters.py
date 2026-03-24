@@ -10,16 +10,16 @@ from generic_config import FAILED_URLS_FILE#, SKU_FILE_NAME, VALID_COLLECTIONS
 
 logger = logging.getLogger(__name__)
 
-def generate_csv_report(records: List[FinalProductRecord], output_path: Path) -> None:
-    """Generates a local CSV report of the final, clean data."""
+def generate_csv_report(records: List[FinalProductRecord], output_path: Path, run_timestamp: str) -> None:
+    """Generates a local CSV report of the final, clean data for this run only."""
     with open(output_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["SKU", "Price", "Old Price", "Promo Price", "Availability", "URL", "Timestamp", "Detection_Status"])
+        writer.writerow(["SKU", "Collection", "Price", "Old Price", "Promo Price", "Availability", "URL", "Timestamp", "Detection_Status"])
         writer.writerows([
-            (r.normalized_sku, r.price, r.price_old, r.price_promo, r.availability_code, r.url, r.timestamp.isoformat(), r.detection_status)
+            (r.normalized_sku, r.collection, r.price, r.price_old, r.price_promo, r.availability_code, r.url, run_timestamp, r.detection_status)
             for r in records
         ])
-    logger.info(f"Local CSV report saved to {output_path.name}")
+    logger.info(f"CSV report saved to {output_path.name} with {len(records)} records.")
 
 # --- Placeholder for Google Sheets ---
 def upload_to_google_sheets(records: List[FinalProductRecord], service_account_json: str) -> None:
