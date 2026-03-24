@@ -49,7 +49,7 @@ jobs:
       # 2. RUN: Your scraper updates the 'data/prices.duckdb' file
       - name: Run update script
         env:
-          BASE_URL: ${{ secrets.MY_SECRET }}
+          BASE_URL: ${{ secrets.BASE_URL }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             ARGS=""
