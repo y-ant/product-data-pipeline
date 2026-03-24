@@ -1,0 +1,111 @@
+name: Get Prices CSV
+
+on:
+  schedule:
+    - cron: '0 7 * * *'  # Run once a day at 7AM UTC
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: 'Limit number of URLs to process (optional)'
+        required: false
+        type: number
+      cron:
+        description: 'Enable cron mode (adds random delay)'
+        required: false
+        type: boolean
+        default: false
+
+# Required to allow the action to create/update the Release
+permissions:
+  contents: write
+
+jobs:
+  update-db:
+    runs-on: ubuntu-latest
+    environment: the-env
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Playwright browsers
+        run: playwright install
+
+      # 1. RESTORE
+      - name: Restore DuckDB Cache
+        id: cache-db
+        uses: actions/cache/restore@v4
+        with:
+          path: data/prices.duckdb
+          key: duckdb-price-storage-${{ github.run_id }}
+          restore-keys: |
+            duckdb-price-storage-
+
+      # 2. RUN
+      - name: Run update script
+        env:
+          BASE_URL: ${{ secrets.BASE_URL }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            ARGS=""
+            if [ -n "${{ inputs.limit }}" ]; then
+              ARGS="$ARGS --limit ${{ inputs.limit }}"
+            fi
+            if [ "${{ inputs.cron }}" = "true" ]; then
+              ARGS="$ARGS --cron"
+            fi
+            python run_cli.py $ARGS
+          else
+            python run_cli.py --cron
+          fi
+
+      # 3. SAVE
+      - name: Save DuckDB Cache
+        uses: actions/cache/save@v4
+        with:
+          path: data/prices.duckdb
+          key: duckdb-price-storage-${{ github.run_id }}
+
+      # 4. ARTIFACT: DB
+      - name: Upload Database Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: duckdb-database-file
+          path: data/prices.duckdb
+          retention-days: 7
+
+      # 5. ARTIFACT: CSV
+      - name: Upload Prices CSV
+        uses: actions/upload-artifact@v4
+        with:
+          name: prices-csv
+          path: artifacts/prices_*.csv
+          retention-days: 30
+
+      # 6. ARTIFACT: Log
+      - name: Upload Scrape Log
+        uses: actions/upload-artifact@v4
+        with:
+          name: scrape-log
+          path: artifacts/scrape_*.log
+          retention-days: 7
+
+      # 7. PUBLIC RELEASE: This makes the CSV available to everyone
+      - name: Upload CSV to Public Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: latest-data                 # Keep this in English
+          name: "Ціни на товари (CSV)"         # Ukrainian title is fine!
+          body: "Ціни оновлені ${{ github.event.repository.updated_at }}."
+          files: artifacts/prices_*.csv
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
