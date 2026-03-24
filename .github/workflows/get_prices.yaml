@@ -83,7 +83,7 @@ jobs:
       - name: Upload Prices CSV
         uses: actions/upload-artifact@v4
         with:
-          name: prices-csv-${{ github.run_id }}
+          name: prices-csv
           path: artifacts/prices_*.csv
           retention-days: 30
 
@@ -91,6 +91,6 @@ jobs:
       - name: Upload Scrape Log
         uses: actions/upload-artifact@v4
         with:
-          name: scrape-log-${{ github.run_id }}
+          name: scrape-log
           path: artifacts/scrape_*.log
           retention-days: 7
