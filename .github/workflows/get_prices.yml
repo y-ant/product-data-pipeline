@@ -19,7 +19,7 @@ on:
 jobs:
   update-db:
     runs-on: ubuntu-latest
-    environment: my_test_env
+    environment: the-env
 
     steps:
       - name: Checkout code
