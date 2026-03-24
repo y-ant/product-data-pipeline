@@ -1,76 +1,68 @@
-"""
-generic_config.py
-
-This file defines the public, non-sensitive, and default configuration 
-for the scraping project. All values here are placeholders or structure definitions.
-
-NOTE: The actual working values must be defined in 'config.py', which 
-should be excluded from version control (.gitignore).
-"""
+import os
+import random
 import logging
-from pathlib import Path
+from pathlib import Path 
 
-# --- I/O AND LOGGING CONFIG ---
-# Default log file name
-LOG_FILENAME = "scraper_activity.log"
-LOG_LEVEL = logging.INFO
+# --- SENSITIVE DATA HANDLING ---
+# The BASE_URL should be an Environment Variable (GitHub Secret)
+# generic_config.py
+BASE_URL = os.getenv("BASE_URL")
+BRAND_PAGE = f"{BASE_URL}/brands/m201"
+# if not BASE_URL:
+#     raise ValueError("FATAL: BASE_URL is missing from environment!")
+# Use a placeholder for local development #secret-base-url
+# BASE_URL = os.getenv("BASE_URL", "https://secret-base-url.com").rstrip('/')
 
-# Database Configuration (for SQLite)
-DB_FILENAME = Path("data/product_data.db")
-DB_TABLE_NAME = "product_prices"
+# --- PATHS AND DIRECTORIES ---
+INPUT_DIR = Path("input")
+OUTPUT_DIR = Path("artifacts")
+DATA_DIR = Path("data")
 
-# CSV output file names
-PRODUCT_OUTPUT_FILE = Path("output/product_data.csv")
-AVAILABILITY_OUTPUT_FILE = Path("output/availability_data.csv")
-FAILED_URLS_FILE = Path("output/failed_urls.csv")
-SKU_FILE_NAME = Path("input/skus_to_filter.csv")
+# Ensure directories exist
+for folder in [INPUT_DIR, OUTPUT_DIR, DATA_DIR]:
+    folder.mkdir(parents=True, exist_ok=True)
 
+URL_LIST_PATH = INPUT_DIR / "url_list.txt"
+FAILED_URLS_FILE = OUTPUT_DIR / "failed_urls"  # Base filename for failed URLs (will be timestamped)
+# DB_FILENAME = DATA_DIR / "scraped_data.db"
+# SKU_FILE_NAME = INPUT_DIR / "skus.txt"
+DB_FILENAME = DATA_DIR / "prices.duckdb"
+LOG_LEVEL = logging.ERROR  # Set to ERROR to minimize log noise, can be overridden in config_not_needed_anymore.py
 
-# --- SCRAPER BEHAVIOR CONSTANTS ---
-# Max number of concurrent browser instances (adjust based on machine resources)
-MAX_CONCURRENT_PAGES = 5
+VALID_COLLECTIONS = { 'mysecret1', 'mysecret2' }  # Example of a sensitive collection list that could be stored as an environment variable or in a secure vault
 
-# Timeout for waiting for a page to load (in milliseconds)
-PAGE_LOAD_TIMEOUT = 30000 
+# --- SCRAPER BEHAVIOR ---
+CONCURRENCY_LIMIT = 5
+PAGE_LOAD_TIMEOUT = 30000  # 30 seconds
+MAX_PRODUCT_RETRIES = 3
+BLOCK_RESOURCES = {'image', 'font', 'stylesheet', 'media'}
 
-# Max retries for fetching a single product page
-MAX_PRODUCT_RETRIES = 3 
-MAX_PAGE_RETRIES = 2 # Retries for the listing (link collection) page
-
-# Resource Blocking
-BLOCK_RESOURCES = {'image', 'font', 'stylesheet', 'media'} # Empty this set in config.py if the site requires these resources
-
-# Domains to block for performance optimization
+# Domains to block for performance
 BLOCKED_DOMAINS = [
-    '*helpcrunch.com*',  # Chat widget
-    '*google-analytics.com*',  # Analytics
-    '*facebook.com*',  # Social media
-    '*doubleclick.net*',  # Ads
-    '*hotjar.com*',  # Analytics
-    '*clarity.ms*',  # Analytics
-    '*yandex.ru*',  # Analytics
+    '*google-analytics.com*', '*facebook.com*', '*doubleclick.net*', 
+    '*hotjar.com*', '*clarity.ms*', '*yandex.ru*'
 ]
 
-# Scrolling for dynamic loading (on listing pages)
-SCROLL_ATTEMPTS = 5
-SCROLL_PAUSE = 1.0 # Seconds between scroll attempts
+# --- USER AGENTS (Extended to 10) ---
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:123.0) Gecko/20100101 Firefox/123.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edge/121.0.0.0",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_3_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3.1 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (iPad; CPU OS 17_3_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3.1 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3.1 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 OPR/108.0.0.0"
+]
 
-# List of URL fragments to exclude during link collection
-EXCLUDE_FRAGMENTS = ['#reviews', '#contact', '#policy']
+# --- UTILITY FUNCTIONS ---
+def get_random_ua():
+    return random.choice(USER_AGENTS)
 
-# Selector used to find the JSON-LD script tag on product pages
-JSON_LD_SELECTOR = 'script[type="application/ld+json"]'
-
-
-# --- DUMMY SELECTORS (These must be overridden in config.py) ---
-# Example: Selector for a product listing page URL
-PRODUCT_LINK_SELECTOR = "a[href*='/p']"#"a.product-link"
-
-# Example: Base URLs
-BASE_URL = "https://example.com"
-BRAND_PAGE = "https://example.com/category/all-products"
-
-# Target brand to scrape (override in config.py)
-TARGET_BRAND = "Example Brand"  # This should be the exact brand name as it appears in JSON-LD
-DEBUG_MODE = False
-CONCURRENCY_LIMIT = 5
+def scrub_url(url: str) -> str:
+    """Removes the sensitive BASE_URL from any string for logging/artifacts."""
+    if not url:
+        return ""
+    return url.replace(BASE_URL, "[SECRET_BASE]")

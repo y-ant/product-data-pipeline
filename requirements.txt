@@ -1,2 +1,5 @@
 playwright
 tenacity
+pydantic
+duckdb
+dotenv

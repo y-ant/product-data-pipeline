@@ -1,80 +1,64 @@
-import sqlite3
 import logging
-from typing import List
+from turtle import pd
+from typing import List,Iterable
 from pathlib import Path
+import duckdb
+from itertools import islice
 
-from generic_config import DB_FILENAME, DB_TABLE_NAME
+from generic_config import DB_FILENAME
 from src.models import FinalProductRecord
 
 logger = logging.getLogger(__name__)
 
-def setup_database(db_path: Path = DB_FILENAME, table_name: str = DB_TABLE_NAME) -> None:
-    """Sets up the SQLite database and the product table."""
-    conn = None
-    try:
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
-        
-        # Create table if it doesn't exist
-        # We use normalized_sku as a primary key to ensure no duplicates.
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS {table_name} (
-                normalized_sku TEXT PRIMARY KEY,
-                price REAL NOT NULL,
-                price_old REAL DEFAULT 0,
-                availability_code TEXT,
-                url TEXT NOT NULL,
-                timestamp TEXT NOT NULL,
-                detection_status TEXT
-            );
-        """)
-        conn.commit()
-        logger.info(f"Database {db_path} and table {table_name} ensured.")
-    except sqlite3.Error as e:
-        logger.error(f"SQLite error during setup: {e}")
-    finally:
-        if conn:
-            conn.close()
+def insert_data(records: List[FinalProductRecord], db_path: str = "prices.duckdb"):
+    if not records:
+        return 0
 
-def insert_data(records: List[FinalProductRecord], db_path: Path = DB_FILENAME, table_name: str = DB_TABLE_NAME) -> int:
-    """
-    Inserts or updates (UPSERT) product records into the database.
-    Uses REPLACE INTO to handle existing SKUs (taking the latest scrape).
-    """
-    conn = None
-    insertion_count: int = 0
-    try:
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
-        
-        sql = f"""
-            REPLACE INTO {table_name} 
-            (normalized_sku, price, price_old, availability_code, url, timestamp, detection_status) 
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """
-        
-        data_to_insert = [
+    with duckdb.connect(db_path) as con:
+        # 2. Schema with Timestamp (Essential for price tracking)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS price_history (
+                normalized_sku VARCHAR,
+                collection VARCHAR,
+                price DOUBLE,
+                price_old DOUBLE,
+                price_promo DOUBLE,
+                availability_code VARCHAR,
+                url VARCHAR,
+                detection_status VARCHAR,
+                timestamp TIMESTAMP DEFAULT date_trunc('hour', CURRENT_TIMESTAMP) 
+            )
+        """)
+        # 1. Ensure the tuple contains ALL data defined in the schema (except the auto-timestamp)
+        data = (
             (
                 r.normalized_sku, 
-                r.price,
-                r.price_old,
-                r.availability_code, 
-                r.url, 
-                r.timestamp.isoformat(), 
+                r.collection, 
+                float(r.price), 
+                float(r.price_old), 
+                float(r.price_promo), 
+                str(r.availability_code), 
+                str(r.url), 
                 r.detection_status
-            )
+            ) 
             for r in records
-        ]
+        )
+
+        # 2. Match the column names in the INSERT to the CREATE TABLE names
+        con.executemany("""
+            INSERT INTO price_history (
+                normalized_sku, 
+                collection, 
+                price, 
+                price_old, 
+                price_promo, 
+                availability_code, 
+                url, 
+                detection_status
+            ) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, data)
         
-        cursor.executemany(sql, data_to_insert)
-        conn.commit()
-        insertion_count = cursor.rowcount
-        logger.info(f"Successfully UPSERTED {insertion_count} records into {table_name}.")
-        return insertion_count
-        
-    except sqlite3.Error as e:
-        logger.error(f"SQLite error during data insertion: {e}")
-        return 0
-    finally:
-        if conn:
-            conn.close()
+        count = len(records)
+        logger.info(f"Successfully appended {count} records to price_history.")
+        return count
