@@ -103,8 +103,8 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           tag_name: latest-data                 # Keep this in English
-          name: "Найсвіжіші ціни (CSV)"         # Ukrainian title is fine!
-          body: "Цей реліз містить останні дані про ціни, оновлені ${{ github.event.repository.updated_at }}."
+          name: "Ціни на товари (CSV)"         # Ukrainian title is fine!
+          body: "Ціни оновлені ${{ github.event.repository.updated_at }}."
           files: artifacts/prices_*.csv
           make_latest: true
         env:
