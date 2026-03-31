@@ -1,42 +1,87 @@
-product-data-pipeline
-An ETL pipeline designed to pull, process, and store product data; all of it automated.
+# Product Data Pipeline
 
-### Overview
+An automated ETL pipeline for extracting, processing, and monitoring competitor product prices.
 
-This project automates price monitoring for a specific list of competitor products to help shop managers compare their pricing strategy.
+---
 
-Target URLs and sensitive identifiers are stored in GitHub Secrets to avoid exposing scraping targets.
+## Overview
 
-Built using Playwright with an asynchronous architecture for fast, reliable data extraction.
+This project enables automated price monitoring for a selected set of products, helping shop manager evaluate and adjust their pricing strategies.
 
-### Tech Stack
+- Extracts product data from target websites using browser automation  
+- Processes and structures pricing data  
+- Stores results for analysis and comparison  
 
-Language: Python (Asyncio)
+Sensitive targets and identifiers are managed securely via environment variables and GitHub Secrets.
 
-Browser Automation: Playwright
+---
 
-Orchestration: GitHub Actions
+## Tech Stack
 
-### Automation
+- **Language:** Python (asyncio)  
+- **Browser Automation:** Playwright  
+- **Orchestration:** GitHub Actions  
 
-The pipeline is fully managed via GitHub Actions:
+---
 
-Scheduled: Runs daily to ensure price parity.
+## Architecture
 
-Manual: Can be dispatched via the Actions tab for ad-hoc runs.
+The pipeline follows a simple ETL flow:
 
-Secure: All environment variables are injected at runtime via encrypted secrets.
+1. **Extract**  
+   - Scrape product data using Playwright (asynchronous)
 
-### Local Setup
+2. **Transform**  
+   - Clean and normalize price and product data  
 
-Clone the repo.
+3. **Load**  
+   - Store structured output for later analysis  
 
-Install dependencies: pip install -r requirements.txt
+---
 
-Install Playwright: playwright install chromium
+## Automation
 
-Configure: Populate your local .env file with the required secrets.
+The pipeline is fully automated using GitHub Actions:
 
-### License
+- **Scheduled runs:** Executes daily to track price changes  
+- **Manual runs:** Triggered on demand via the Actions tab  
+- **Secure configuration:** Environment variables managed via encrypted secrets  
 
-MIT
+---
+
+## Local Setup
+
+### 1. Create and activate virtual environment
+
+```bash
+uv venv
+source .venv/bin/activate
+```
+
+### 2. Install dependencies
+
+```bash
+uv pip install -r requirements.txt
+```
+
+### 3. Install Playwright browsers
+
+```bash
+playwright install chromium
+```
+
+### 4. Configure environment variables
+
+Create a `.env` file in the project root:
+
+```env
+BASE_URL=your_target_url
+```
+
+### 5. Run the pipeline
+
+```bash
+python run_cli.py
+```
+
+```
