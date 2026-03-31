@@ -20,9 +20,9 @@ def generate_csv_report(records: List[FinalProductRecord], output_path: Path, ru
     """Generates a local CSV report of the final, clean data for this run only."""
     with open(output_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["SKU", "Price", "Old Price", "Promo Price", "Availability", "URL", "Timestamp", "Detection_Status"])
+        writer.writerow(["SKU", "Price", "Old Price", "Promo Price", "Availability", "URL"])
         writer.writerows([
-            (r.normalized_sku, r.price, r.price_old, r.price_promo, r.availability_code, _strip_base_url(r.url), run_timestamp, r.detection_status)
+            (r.normalized_sku, r.price, r.price_old, r.price_promo, r.availability_code, _strip_base_url(r.url))
             for r in records
         ])
     logger.info(f"CSV report saved to {output_path.name} with {len(records)} records.")

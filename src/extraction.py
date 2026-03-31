@@ -325,13 +325,28 @@ async def parse_product_jsonld(page: Page) -> Optional[Dict[str, str]]: #somehow
                         logger.debug(f"Skipping non-{TARGET_BRAND} product. Brand: {brand_name}")
                         continue
 
-                # Try different possible SKU fields
+                # Try different possible SKU fields, prioritizing the page title
                 sku = None
-                for sku_field in ["sku", "productID", "mpn"]:
-                    sku_raw = str(item.get(sku_field, "")).strip()
-                    if sku_raw and sku_raw.lower() != "none" and len(sku_raw) >= 3:
-                        sku = sku_raw
-                        break
+                
+                # Fetch page title once if not already fetched
+                try:
+                    page_title = await page.title()
+                    # Look for 6-15 digits (possibly separated by spaces or dashes)
+                    matches = re.finditer(r'(?<!\d)\d(?:[\- ]?\d){5,14}(?!\d)', page_title)
+                    for m in matches:
+                        clean_candidate = m.group(0).replace('-', '').replace(' ', '')
+                        if 6 <= len(clean_candidate) <= 15:
+                            sku = clean_candidate
+                            break
+                except Exception as e:
+                    logger.debug(f"Error extracting SKU from title: {str(e)}")
+
+                if not sku:
+                    for sku_field in ["sku", "productID", "mpn"]:
+                        sku_raw = str(item.get(sku_field, "")).strip()
+                        if sku_raw and sku_raw.lower() != "none" and len(sku_raw) >= 3:
+                            sku = sku_raw
+                            break
 
                 if not sku:
                     continue
