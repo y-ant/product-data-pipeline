@@ -378,6 +378,7 @@ async def parse_product_jsonld(page: Page, title_sku: Optional[str] = None) -> O
                 if not sku:
                     continue
 
+                # Handle offers data
                 offers = item.get("offers", {}) or {}
                 if isinstance(offers, list):
                     offers = offers[0] if offers else {}

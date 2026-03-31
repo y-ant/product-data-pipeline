@@ -15,7 +15,6 @@ on:
         type: boolean
         default: false
 
-# Required to allow the action to create/update the Release
 permissions:
   contents: write
 
@@ -45,11 +44,12 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: data/prices.duckdb
+          # Use a static key with a fallback to the most recent match
           key: duckdb-price-storage-${{ github.run_id }}
           restore-keys: |
             duckdb-price-storage-
-
-      # 2. RUN
+            
+      # 2. RUN: Your scraper updates the 'data/prices.duckdb' file
       - name: Run update script
         env:
           BASE_URL: ${{ secrets.BASE_URL }}
@@ -68,6 +68,7 @@ jobs:
           fi
 
       # 3. SAVE
+
       - name: Save DuckDB Cache
         uses: actions/cache/save@v4
         with:
