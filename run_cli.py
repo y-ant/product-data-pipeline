@@ -36,11 +36,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 def check_environment():
+    github = False
     if os.environ.get("GITHUB_ACTIONS") == "true":
         logger.info("🚀 Running in: GITHUB ACTIONS")
+        github = True
     else:
         logger.info("💻 Running in: LOCAL ENVIRONMENT")
         logger.info("⚠️ Ensure your local .env file or export is set.")
+    return github
+
 
 # --- WORKER FUNCTION ---
 
@@ -168,8 +172,9 @@ async def run_scrape_pipeline(limit: int = None):
         log_failed_urls(failed_log_data, str(OUTPUT_DIR / fail_filename))
 
 if __name__ == "__main__":
-    check_environment()
-
+    github = check_environment()
+    if not github:
+        load_dotenv()  # this loads .env into environment
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--cron", action="store_true")

@@ -15,6 +15,9 @@ on:
         type: boolean
         default: false
 
+# Required to allow the action to create/update the Release
+permissions:
+  contents: write
 
 jobs:
   update-db:
@@ -36,17 +39,17 @@ jobs:
       - name: Install Playwright browsers
         run: playwright install
 
-      # 1. RESTORE: Get the database from the last successful run
+      # 1. RESTORE
       - name: Restore DuckDB Cache
         id: cache-db
         uses: actions/cache/restore@v4
         with:
           path: data/prices.duckdb
-          # Use a static key with a fallback to the most recent match
           key: duckdb-price-storage-${{ github.run_id }}
           restore-keys: |
             duckdb-price-storage-
-      # 2. RUN: Your scraper updates the 'data/prices.duckdb' file
+
+      # 2. RUN
       - name: Run update script
         env:
           BASE_URL: ${{ secrets.BASE_URL }}
@@ -63,15 +66,15 @@ jobs:
           else
             python run_cli.py --cron
           fi
-      # 3. SAVE: Put the updated database back into the cache for next run
+
+      # 3. SAVE
       - name: Save DuckDB Cache
         uses: actions/cache/save@v4
         with:
           path: data/prices.duckdb
           key: duckdb-price-storage-${{ github.run_id }}
 
-      # 4. ARTIFACT: Make the DB downloadable from the "Actions" tab
-      # This allows you to download it locally to extend/analyze it.
+      # 4. ARTIFACT: DB
       - name: Upload Database Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -79,7 +82,7 @@ jobs:
           path: data/prices.duckdb
           retention-days: 7
 
-      # 5. ARTIFACT: CSV with this run's prices only
+      # 5. ARTIFACT: CSV
       - name: Upload Prices CSV
         uses: actions/upload-artifact@v4
         with:
@@ -87,10 +90,22 @@ jobs:
           path: artifacts/prices_*.csv
           retention-days: 30
 
-      # 6. ARTIFACT: Scrape log for debugging
+      # 6. ARTIFACT: Log
       - name: Upload Scrape Log
         uses: actions/upload-artifact@v4
         with:
           name: scrape-log
           path: artifacts/scrape_*.log
           retention-days: 7
+
+      # 7. PUBLIC RELEASE: This makes the CSV available to everyone
+      - name: Upload CSV to Public Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: latest-data                 # Keep this in English
+          name: "Ціни на товари (CSV)"         # Ukrainian title is fine!
+          body: "Ціни оновлені ${{ github.event.repository.updated_at }}."
+          files: artifacts/prices_*.csv
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

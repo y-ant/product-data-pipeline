@@ -1,29 +1,34 @@
 import re
-import csv
+import os
 import json
 import logging
 import asyncio
 from datetime import datetime
-from typing import List, Set, Optional, Dict, Tuple
+from pathlib import Path
+from typing import List, Set, Optional, Dict
 
-from playwright.async_api import Page, TimeoutError as PlaywrightTimeoutError, async_playwright
+from playwright.async_api import Page, TimeoutError as PlaywrightTimeoutError
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
-from generic_config import (PAGE_LOAD_TIMEOUT, MAX_PRODUCT_RETRIES, BLOCK_RESOURCES, BLOCKED_DOMAINS) #TARGET_BRAND
-
-# Captcha related constants
-CAPTCHA_SELECTORS = {
-    'button': '#captcha-form .confirm-button, .captcha-button, .g-recaptcha, .h-captcha',  # Common captcha button selectors
-    'frame': 'iframe[src*="captcha"], iframe[src*="recaptcha"], iframe[title*="captcha"]',  # Captcha iframes
-    'checkbox': '.recaptcha-checkbox-border'  # reCAPTCHA checkbox
-}
-
-import os
-from pathlib import Path
-
+from generic_config import (
+    PAGE_LOAD_TIMEOUT, MAX_PRODUCT_RETRIES, BLOCK_RESOURCES, BLOCKED_DOMAINS,
+    BASE_URL, BRAND_PAGE
+)
 from src.models import ScrapedItem, FinalProductRecord, DetectionStatus, NormalizedData
 
 logger = logging.getLogger(__name__)
+
+# --- Constants ---
+EXCLUDE_FRAGMENTS = ['policy', 'terms', 'privacy', 'cookie', 'contact', 'about', 'faq', 'help']
+PRODUCT_LINK_SELECTOR = "a[href*='/p']"
+SCROLL_ATTEMPTS = 5
+SCROLL_PAUSE = 1.0
+MAX_PAGE_RETRIES = 3
+
+
+class SchemaNotFoundError(Exception):
+    """Raised when JSON-LD schema is not found after retries."""
+    pass
 
 # --- Core Utility Functions (T-Step) ---
 
@@ -66,19 +71,24 @@ def is_valid_sku(sku_raw: str) -> bool:
     # Check for reasonable length (6 to 15 digits)
     return 6 <= len(normalized) <= 15
 
-def normalize_price(price_raw: str) -> float:# why this is like that? str while the float is passed?
+def _clean_price(raw: str) -> str:
+    """Strip non-numeric chars from a raw price string. Returns '-1' on empty input."""
+    if not raw or raw == "-1":
+        return "-1"
+    cleaned = re.sub(r'[^\d.]', '', raw)
+    return cleaned if cleaned else "-1"
+
+def normalize_price(price_raw: str) -> float:
     """
     Cleans raw price string and converts it to a float.
     Returns -1.0 if conversion fails.
     """
     try:
         if isinstance(price_raw, str):
-            # Remove currency symbols (₴), commas, spaces
-            cleaned = re.sub(r'[^\d.]', '', price_raw)
+            cleaned = _clean_price(price_raw)
             return float(cleaned)
-        else:
-            return price_raw
-    except:
+        return float(price_raw)
+    except (ValueError, TypeError):
         return -1.0
 
 def normalize_sku(sku_raw: str) -> str:
@@ -207,88 +217,136 @@ async def _block_resources(page: Page) -> None:
         "Pragma": "no-cache"
     })
 
-async def parse_product_jsonld(page: Page) -> Optional[Dict[str, str]]: #somehow fails
-    """
-    Extracts and normalizes product metadata from JSON-LD structured data.
+async def extract_sku_from_page_title(page: Page) -> Optional[str]:
+    """Helper to extract a 6-15 digit SKU from the page title."""
+    try:
+        page_title = await page.title()
+        matches = re.finditer(r'(?<!\d)\d(?:[\- ]?\d){5,14}(?!\d)', page_title)
+        for m in matches:
+            clean_candidate = m.group(0).replace('-', '').replace(' ', '')
+            if 6 <= len(clean_candidate) <= 15:
+                return clean_candidate
+    except Exception as e:
+        logger.debug(f"Error extracting SKU from title: {str(e)}")
+    return None
 
-    This function scans the page for 'application/ld+json' scripts to find Schema.org 
-    Product data. It implements a robust retry mechanism to handle asynchronous 
-    DOM rendering and provides fallback logic for price extraction from the DOM 
-    when structured data is incomplete.
+async def parse_html_data(page: Page) -> Dict[str, str]:
+    """Extracts UI pricing, collection, and availability strictly manually via DOM query_selectors."""
+    dom_data = {
+        "price_promo_raw": "-1",
+        "price_raw": "",
+        "price_old_raw": "-1",
+        "collection": "General",
+        "availability_raw": "-1"
+    }
+
+    try:
+        # Try to find PROMO price first
+        promo_el = await page.query_selector(".active-coupon__price")
+        if promo_el:
+            dom_data["price_promo_raw"] = await promo_el.inner_text()
+            
+        # Try to find the new price
+        price_selectors = [".price__new", "span.price", ".product-price"]
+        for selector in price_selectors:
+            el = await page.query_selector(selector)
+            if el:
+                dom_data["price_raw"] = await el.inner_text()
+                break
+        
+        # Try to find the old price
+        old_price_selectors = [".price__old", ".price--old", ".original-price"]
+        for selector in old_price_selectors:
+            el = await page.query_selector(selector)
+            if el:
+                dom_data["price_old_raw"] = await el.inner_text()
+                break
+
+        # Try to get collection info
+        try:
+            breadcrumb_links = await page.query_selector_all(".breadcrumb__link")
+            if len(breadcrumb_links) > 1:
+                collection_text = await breadcrumb_links[-2].inner_text()
+                dom_data["collection"] = collection_text.strip()
+            
+            if dom_data["collection"] == "General":
+                char_selectors = ["li:has-text('Колекція')", "li:has-text('Коллекция')"]
+                for selector in char_selectors:
+                    elements = await page.query_selector_all(selector)
+                    for el in elements:
+                        val_el = await el.query_selector("span:last-child")
+                        if val_el:
+                            text = await val_el.inner_text()
+                            if text and text.strip():
+                                dom_data["collection"] = text.strip()
+                                break
+                    if dom_data["collection"] != "General":
+                        break
+        except Exception as e:
+            logger.debug(f"Collection extraction failed: {e}")
+
+        # Try to get availability information
+        availability_selectors = [
+            "section.article.product-detail .item-column .terms",
+            "xpath=//div[contains(@class, 'product__delivery')]//*[contains(text(), 'Відправка') or contains(text(), 'В наявності')]",
+            ".product-info__delivery .terms"
+        ]
+        for selector in availability_selectors:
+            el = await page.query_selector(selector)
+            if el:
+                dom_data["availability_raw"] = await el.inner_text()
+                break
+                
+        # Clean price texts
+        dom_data["price_raw"] = _clean_price(dom_data["price_raw"])
+        dom_data["price_old_raw"] = _clean_price(dom_data["price_old_raw"])
+        dom_data["price_promo_raw"] = _clean_price(dom_data["price_promo_raw"])
+        
+    except Exception as e:
+        logger.debug(f"HTML extraction failed during DOM parse: {str(e)}")
+        
+    return dom_data
+
+async def parse_product_jsonld(page: Page, title_sku: Optional[str] = None) -> Optional[Dict[str, str]]:
+    """
+    Extracts product SKU and price from JSON-LD structured data.
+
+    Scans the page for 'application/ld+json' scripts to find Schema.org
+    Product data. Retries up to 3 times with exponential backoff if the
+    script tags haven't rendered yet.
 
     Args:
-        page (Page): The Playwright Page instance to scrape.
+        page: The Playwright Page instance to scrape.
+        title_sku: Pre-extracted SKU from the page title (takes priority).
 
     Returns:
-        Optional[Dict[str, str]]: A dictionary containing raw string values for:
-            - sku_raw: The unique product identifier.
-            - price_raw: The current listed price.
-            - price_old_raw: The original price (often retrieved from DOM fallback).
-            - price_promo_raw: Placeholder for promotional pricing.
-            - availability_raw: Placeholder for stock status.
-            - brand: The normalized brand name.
-        Returns None if no valid product matching the target criteria is found.
-
-    Raises:
-        SchemaNotFoundError: If JSON-LD scripts are missing after all retry attempts.
-        Exception: Captures and logs unexpected errors during script evaluation or 
-            JSON decoding.
-
-    Notes:
-        - Implements exponential backoff retries via 'tenacity'.
-        - Performs deep JSON cleaning to handle common malformations in script tags.
-        - Validates brand identity against TARGET_BRAND to ensure data integrity.
+        A dict with 'sku_raw' and 'price_raw', or None if no product found.
     """
-    # # Try different selectors to find JSON-LD scripts
-    # selectors = [
-    #     'script[type="application/ld+json"]'  # Only using the standard double-quoted version
-    # ]
-
-    ## TODO move out
-    class SchemaNotFoundError(Exception):
-        """Raised when query_selector_all returns an empty list."""
-        pass
-    
     @retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=1, max=10),
-    # Only retry if our custom exception is raised (list was empty)
-    retry=retry_if_exception_type(SchemaNotFoundError),
-    reraise=True 
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        retry=retry_if_exception_type(SchemaNotFoundError),
+        reraise=True
     )
     async def get_product_schema_robustly(page):
-        """
-        Attempts to get the JSON-LD schema, retrying if the element is not yet available.
-        """
-        selector = 'script[type="application/ld+json"]' 
-        
-        # 1. Immediately query the DOM
-        scripts = await page.query_selector_all(selector)
-        
-        # 2. If the list is empty, raise our custom error to trigger a retry
+        """Query JSON-LD scripts, retrying if not yet available."""
+        scripts = await page.query_selector_all('script[type="application/ld+json"]')
         if not scripts:
             raise SchemaNotFoundError("JSON-LD script list was empty.")
-
-        # 3. If successful, get the content of the first script
-        # (You may need to iterate through 'scripts' to find the one with "@type":"Product")
         return scripts
 
-    ## TODO move out end # what?
-    #Here there is an issue
-    # --- Main Execution ---
+    all_scripts = []
     try:
-        # This call handles all retries for you.
-        all_scripts = await get_product_schema_robustly(page) 
+        all_scripts = await get_product_schema_robustly(page)
     except SchemaNotFoundError:
-        # This catches the final failure after 3 attempts
-        logger.warning(f"No JSON-LD found on URL after 3 retries.") # TODO unknown url_to_scrape
+        logger.warning("No JSON-LD found on page after 3 retries.")
+        return None
     except Exception as e:
-        # Catch any other unexpected errors
-        logger.error(f"An unexpected error occurred: {e}")
+        logger.error(f"Unexpected error fetching JSON-LD scripts: {e}")
+        return None
 
     for s in all_scripts:
         try:
-            # Try both innerHTML and innerText as some pages might format differently
             text = await s.evaluate('el => el.innerHTML || el.innerText')
             text = text.strip()
             if not text:
@@ -296,51 +354,20 @@ async def parse_product_jsonld(page: Page) -> Optional[Dict[str, str]]: #somehow
 
             try:
                 data = json.loads(text)
-            except json.JSONDecodeError as e:
+            except json.JSONDecodeError:
                 try:
-                    data = clean_json_string(text)
-                    data = json.loads(data)
+                    data = json.loads(clean_json_string(text))
                 except Exception as inner_e:
-                    logger.debug(f"JSON deep decode error: {str(inner_e)}")
+                    logger.debug(f"JSON deep decode error: {inner_e}")
                     continue
-
 
             candidates = data if isinstance(data, list) else [data]
 
             for item in candidates:
-                if not isinstance(item, dict):
-                    continue
-                    
-                # Check if it's a product type
-                if item.get("@type") != "Product":
+                if not isinstance(item, dict) or item.get("@type") != "Product":
                     continue
 
-                # Check for brand
-                brand_data = item.get("brand", {})
-                if isinstance(brand_data, dict):
-                    brand_name = brand_data.get("name", "").strip()
-                    # Handle HTML entity in brand name
-                    brand_name = brand_name.replace("&amp;", "&")
-                    if brand_name != TARGET_BRAND:
-                        logger.debug(f"Skipping non-{TARGET_BRAND} product. Brand: {brand_name}")
-                        continue
-
-                # Try different possible SKU fields, prioritizing the page title
-                sku = None
-                
-                # Fetch page title once if not already fetched
-                try:
-                    page_title = await page.title()
-                    # Look for 6-15 digits (possibly separated by spaces or dashes)
-                    matches = re.finditer(r'(?<!\d)\d(?:[\- ]?\d){5,14}(?!\d)', page_title)
-                    for m in matches:
-                        clean_candidate = m.group(0).replace('-', '').replace(' ', '')
-                        if 6 <= len(clean_candidate) <= 15:
-                            sku = clean_candidate
-                            break
-                except Exception as e:
-                    logger.debug(f"Error extracting SKU from title: {str(e)}")
-
+                sku = title_sku
                 if not sku:
                     for sku_field in ["sku", "productID", "mpn"]:
                         sku_raw = str(item.get(sku_field, "")).strip()
@@ -351,78 +378,27 @@ async def parse_product_jsonld(page: Page) -> Optional[Dict[str, str]]: #somehow
                 if not sku:
                     continue
 
-                # Handle offers data
                 offers = item.get("offers", {}) or {}
                 if isinstance(offers, list):
                     offers = offers[0] if offers else {}
                 elif not isinstance(offers, dict):
                     continue
 
-                # Get current price and handle different formats
-                price = str(offers.get("price", "-1")).strip()
-                
-                # Try to get old price from DOM
-                price_old = "-1"
-                try:
-                    old_price_selectors = [
-                        ".price__old",       # Primary selector
-                        ".price--old",       # Alternative format
-                        ".original-price",   # Another common pattern
-                        ".product-price-old" # Backup selector
-                    ]
-                    for selector in old_price_selectors:
-                        old_price_element = await page.query_selector(selector)
-                        if old_price_element:
-                            price_old_text = await old_price_element.inner_text()
-                            # Clean up the price (remove currency symbols, spaces, etc.)
-                            price_old = re.sub(r'[^\d.]', '', price_old_text)
-                            if price_old:  # If we found a valid price, break the loop
-                                break
-                except Exception as e:
-                    logger.debug(f"Error extracting old price from DOM: {str(e)}")
-
-                collection = "General"
-                try:
-                    # Strategy A: Breadcrumbs (website specific)
-                    breadcrumb_links = await page.query_selector_all(".breadcrumb__link")
-                    if len(breadcrumb_links) > 1:
-                        # We take the one before the current product name
-                        collection_text = await breadcrumb_links[-2].inner_text()
-                        collection = collection_text.strip()
-                    
-                    # Strategy B: If breadcrumbs fail, check Characteristics table
-                    if collection == "General":
-                        char_selector = "li:has-text('Коллекция'), .product-char:has-text('Колекція')"
-                        char_element = await page.query_selector(char_selector)
-                        if char_element:
-                            # Extracting the value part specifically
-                            val_el = await char_element.query_selector(".value, span:last-child")
-                            if val_el:
-                                collection = await val_el.inner_text()
-                except Exception as e:
-                    logger.debug(f"Collection extraction failed: {e}")
+                price = _clean_price(str(offers.get("price", "-1")).strip())
 
                 logger.debug(f"Found JSON-LD data: SKU={sku}, Price={price}")
-                # Include brand information in the returned data
-                return {
-                    "sku_raw": sku,
-                    "collection": collection.strip(),
-                    "price_raw": price,
-                    "price_old_raw": price_old,
-                    "price_promo_raw": "-1", # JSON-LD usually doesn't have promo coupons
-                    "availability_raw": "-1",  # Will be set by DOM extraction later
-                    "brand": brand_name  # Include brand for logging/debugging
-                }
-                
+                return {"sku_raw": sku, "price_raw": price}
+
         except json.JSONDecodeError as e:
-            logger.debug(f"JSON decode error: {str(e)}")
+            logger.debug(f"JSON decode error: {e}")
         except Exception as e:
-            logger.debug(f"Error parsing JSON-LD: {str(e)}")
-            
+            logger.debug(f"Error parsing JSON-LD: {e}")
+
     return None
 
 # --- Main Scraping Logic (E-Step) ---
 
+# TODO: Not currently called from run_cli.py — kept for future use (URL discovery from brand pages)
 async def collect_product_urls(page: Page, max_pages: int = -1, stop_flag: asyncio.Event = None) -> List[str]:
     """
     Collect unique, valid product URLs from brand pagination pages.
@@ -470,7 +446,6 @@ async def collect_product_urls(page: Page, max_pages: int = -1, stop_flag: async
                 current_urls_on_page_load: int = len(urls)
 
                 for _ in range(SCROLL_ATTEMPTS):
-                    anchors2 = await page.query_selector_all(PRODUCT_LINK_SELECTOR)
                     anchors = await page.query_selector_all(".product__item a[href*='/p']")
 
                     for a in anchors:
@@ -501,11 +476,6 @@ async def collect_product_urls(page: Page, max_pages: int = -1, stop_flag: async
                 if max_pages == -1 and new_urls_count == 0 and pnum > 1:
                     logger.info("End of pagination detected (no new products)")
                     return urls
-                
-                # Check for anti-scraping measures here (e.g., CAPTCHA selector)
-                # if await page.query_selector(".captcha-element"):
-                #     logger.critical("CAPTCHA DETECTED. Stopping URL collection.")
-                #     return urls
 
                 break # Page loaded successfully
 
@@ -520,189 +490,16 @@ async def collect_product_urls(page: Page, max_pages: int = -1, stop_flag: async
 
     return urls
 
-async def check_for_captcha(page: Page, url: str) -> bool: # TODO consider removing
-    """
-    Advanced captcha detection by analyzing page content, elements, and behavior.
-    Returns True if captcha is detected.
-    """
-    is_debug = os.environ.get('DEBUG_MODE', '').lower() == 'true'
-    
-    try:
-        # 1. Get page content and analyze it
-        page_content = await page.content()
-        page_text = await page.evaluate('document => document.body.innerText')
-        
-        # 2. Check for common captcha and city confirmation indicators in content
-        content_indicators = [
-            'captcha',
-            'verify you',
-            'prove you',
-            'are you human',
-            'security check',
-            'verification',
-            'robot',
-            'automatic request',
-            'suspicious activity',
-            'unusual traffic',
-            'виберіть місто',  # Ukrainian
-            'оберіть місто',   # Ukrainian
-            'ваше місто',      # Ukrainian
-            'підтвердіть місто', # Ukrainian
-            'выберите город',   # Russian
-            'выбор города',     # Russian
-            'подтвердите город' # Russian
-        ]
-        
-        # 3. Look for visual indicators (elements that might be captcha or city selection)
-        visual_indicators = [
-            # Captcha selectors
-            'iframe[src*="captcha"]',
-            'iframe[src*="challenge"]',
-            'iframe[title*="challenge"]',
-            'form[action*="captcha"]',
-            'div[class*="captcha"]',
-            'div[id*="captcha"]',
-            'img[alt*="captcha"]',
-            '#captcha',
-            '.captcha',
-            '.g-recaptcha',
-            '.h-captcha',
-            # City selection selectors
-            '.city-select',
-            '.city-selector',
-            '.city-confirm',
-            '.city-modal',
-            '[data-city-select]',
-            '[data-modal="city"]',
-            '.location-confirm',
-            '.region-select',
-            '#city-selection',
-            '.city-selection-modal'
-        ]
-        
-        # Add specific city confirmation buttons/links
-        city_confirm_selectors = [
-            'button[data-city]',
-            'a[data-city]',
-            '.confirm-city-btn',
-            '.city-confirm-btn',
-            'button:has-text("Так")',           # Ukrainian "Yes"
-            'button:has-text("Підтвердити")',   # Ukrainian "Confirm"
-            'button:has-text("Да")',            # Russian "Yes"
-            'button:has-text("Подтвердить")',   # Russian "Confirm"
-            '[data-choice="confirm"]'
-        ]
 
-        # 4. Check for blocked status
-        blocked_indicators = [
-            'access denied',
-            'blocked',
-            'too many requests',
-            '429',
-            'rate limit',
-            'try again later'
-        ]
+async def _check_access(page: Page) -> bool:
+    """Returns True if the page shows an access denied / blocked message."""
+    page_html = await page.content()
+    page_text_lower = page_html.lower()
+    if "access denied" in page_text_lower or "blocked" in page_text_lower:
+        logger.warning("Blocked or Access Denied page detected")
+        return True
+    return False
 
-        # Check content indicators
-        content_detected = any(indicator.lower() in page_text.lower() for indicator in content_indicators)
-        
-        # Check visual elements
-        has_visual_elements = False
-        for selector in visual_indicators:
-            try:
-                element = await page.query_selector(selector)
-                if element:
-                    logger.info(f"Found potential captcha element: {selector}")
-                    has_visual_elements = True
-                    break
-            except Exception:
-                continue
-
-        # Check for blocked status
-        is_blocked = any(indicator.lower() in page_text.lower() for indicator in blocked_indicators)
-
-        # 5. Check for city confirmation dialog
-        city_dialog_detected = False
-        selected_city = False
-        
-        for selector in city_confirm_selectors:
-            try:
-                city_button = await page.query_selector(selector)
-                if city_button:
-                    logger.info(f"Found city confirmation button: {selector}")
-                    city_dialog_detected = True
-                    try:
-                        # Try to click the city confirmation button
-                        await city_button.click()
-                        logger.info("Clicked city confirmation button")
-                        # Wait for any animations/transitions
-                        await page.wait_for_timeout(2000)
-                        selected_city = True
-                        break
-                    except Exception as e:
-                        logger.error(f"Failed to click city button: {str(e)}")
-            except Exception:
-                continue
-                
-        # 6. Take debugging actions if captcha or city dialog is detected
-        is_captcha = content_detected or has_visual_elements or is_blocked or city_dialog_detected
-        
-        if is_captcha:
-            status = []
-            if content_detected:
-                status.append("Captcha/Block content")
-            if has_visual_elements:
-                status.append("Captcha elements")
-            if is_blocked:
-                status.append("Access blocked")
-            if city_dialog_detected:
-                status.append("City selection" + (" (handled)" if selected_city else " (not handled)"))
-                
-            logger.warning(f"Detection on {url}: {', '.join(status)}")
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            
-            # Create debug directory if it doesn't exist
-            os.makedirs('debug_screenshots', exist_ok=True)
-            
-            # Take both full page and viewport screenshots
-            await page.screenshot(
-                path=f"debug_screenshots/captcha_full_{timestamp}.png",
-                full_page=True
-            )
-            await page.screenshot(
-                path=f"debug_screenshots/captcha_viewport_{timestamp}.png",
-                full_page=False
-            )
-            
-            # Save page HTML for analysis
-            with open(f"debug_screenshots/page_source_{timestamp}.html", "w", encoding="utf-8") as f:
-                f.write(page_content)
-                
-            # Log detection type
-            if content_detected:
-                logger.info("Captcha detected through content analysis")
-            if has_visual_elements:
-                logger.info("Captcha detected through visual elements")
-            if is_blocked:
-                logger.info("Access appears to be blocked")
-
-            if is_debug:
-                logger.info("Debug mode: Manual inspection time...")
-                # In debug mode, keep the page open longer for inspection
-                await page.wait_for_timeout(60000)  # 1 minute timeout for manual inspection
-                
-                # After timeout, recheck if we're still blocked
-                new_content = await page.content()
-                if any(indicator in new_content.lower() for indicator in blocked_indicators):
-                    logger.warning("Still blocked after manual inspection")
-                else:
-                    logger.info("Page appears to be unblocked after manual inspection")
-                    
-        return is_captcha
-        
-    except Exception as e:
-        logger.error(f"Error in captcha detection: {str(e)}")
-        return False  # Assume no captcha on error to allow retry logic to handle it
 
 async def scrape_single_product(page: Page, url: str, failed_log_data: list, stop_flag: asyncio.Event = None) -> Optional[ScrapedItem]:
     """
@@ -720,12 +517,11 @@ async def scrape_single_product(page: Page, url: str, failed_log_data: list, sto
         try:
             # Add increasing delay between retries
             if attempt > 1:
-                delay = BASE_BACKOFF ** (attempt - 1) * 2  # Increased delay for subsequent attempts
+                delay = BASE_BACKOFF ** (attempt - 1) * 2
                 logger.info(f"Retry attempt {attempt} for {url_to_scrape}, waiting {delay:.1f}s")
                 await asyncio.sleep(delay)
                 
-                # Only clear cookies if we got blocked (403/429) in the previous attempt
-                if attempt > MAX_PRODUCT_RETRIES - 1:  # On last retry attempt
+                if attempt > MAX_PRODUCT_RETRIES - 1:
                     logger.info(f"Last retry attempt, clearing cookies for {url_to_scrape}")
                     await page.context.clear_cookies()
             
@@ -735,231 +531,73 @@ async def scrape_single_product(page: Page, url: str, failed_log_data: list, sto
                 response = await page.goto(
                     url_to_scrape, 
                     wait_until="domcontentloaded", 
-                    timeout=PAGE_LOAD_TIMEOUT * 2  # Double the timeout for problematic URLs
+                    timeout=PAGE_LOAD_TIMEOUT * 2
                 )
                 logger.info(f"Basic page load completed for {url_to_scrape}")
                 
-                # Log detailed response info
                 status = response.status if response else 'No response'
                 logger.info(f"Response status for {url_to_scrape}: {status}")
                 
                 if response and not response.ok:
                     logger.error(f"Bad response status {status} for {url_to_scrape}")
-                    if status == 403:
-                        logger.error("Access forbidden - might be IP blocked")
-                    elif status == 429:
-                        logger.error("Too many requests - rate limited")
-                    elif status == 404:
-                        logger.error("Page not found - 404 error")
 
             except PlaywrightTimeoutError as e:
-                logger.warning(f"Initial page load timeout for {url_to_scrape}: {str(e)}")
+                logger.warning(f"Initial page load timeout for {url_to_scrape}: {e}")
                 raise
             except Exception as e:
-                logger.error(f"Navigation error for {url_to_scrape}: {type(e).__name__}: {str(e)}")
+                logger.error(f"Navigation error for {url_to_scrape}: {type(e).__name__}: {e}")
                 raise
 
-            # Enhanced error detection
             if page.main_frame.url.startswith("data:text/html"):
                 logger.warning(f"Failed to navigate to {url_to_scrape}. Possible block or redirect.")
                 raise PlaywrightTimeoutError("Navigation blocked.")
 
-            async def check_access(page):
-                # 1. Await the content once and store the result (a string)
-                page_html = await page.content()
-                
-                # 2. Convert the content string to lowercase once for efficient checking
-                page_text_lower = page_html.lower() 
-                
-                # 3. Perform all checks on the stored, processed string
-                if "access denied" in page_text_lower or "blocked" in page_text_lower:
-                    print("Blocked or Access Denied page detected!")
-                    return True
-                
-                return False
-
-            if await check_access(page):
+            if await _check_access(page):
                 logger.error(f"Access denied/blocked on {url_to_scrape}")
                 raise Exception("Access denied")
                 
             try:
-                # Try JSON-LD parsing
+                # 1. First, attempt to extract the SKU from the title
+                title_sku = await extract_sku_from_page_title(page)
+                
+                # 2. Try JSON-LD parsing
                 logger.info(f"Attempting to parse JSON-LD for {url_to_scrape}")
-                json_data = await parse_product_jsonld(page)
+                json_data = await parse_product_jsonld(page, title_sku=title_sku) or {}
                 
-                if json_data is None:
-                    logger.debug(f"No JSON-LD for {url_to_scrape}. Falling back to HTML.")
-                    raise Exception("No JSON-LD, forcing HTML fallback")
+                # 3. Always run HTML scraper for collection/availability/promos which JSON-LD lacks
+                logger.info(f"Extracting HTML DOM details for {url_to_scrape}")
+                html_data = await parse_html_data(page)
 
-                # Get availability information OUTSIDE OF JSON-LD parsing
-                availability_text_clean = "-1"
-                try:
-                   # Try to find the new price (using multiple possible selectors)
-                    price_selectors = [
-                        ".price__new",  # Main new price
-                        "span.price",    # Alternative selector
-                        ".product-price" # Another alternative
-                    ]
-                    for selector in price_selectors:
-                        el = await page.query_selector(selector)
-                        if el:
-                            price_text = await el.inner_text()
-                            break
+                # 4. Merge Data prioritizing JSON-LD
+                final_sku = json_data.get('sku_raw') or title_sku or get_product_id_from_url(url_to_scrape) or "N/A_fallback"
+                final_price = json_data.get('price_raw') or html_data.get('price_raw', '-1')
+                
+                if json_data and not json_data.get('price_raw'):
+                    logger.debug(f"No JSON-LD price for {url_to_scrape}. Using HTML fallback price.")
                     
-                    # Try to find the old price
-                    old_price_selectors = [
-                        ".price__old",      # Main old price
-                        ".price--old",      # Alternative
-                        ".original-price"   # Another alternative
-                    ]
-                    for selector in old_price_selectors:
-                        el = await page.query_selector(selector)
-                        if el:
-                            price_old_text = await el.inner_text()
-                            break
+                if not json_data and final_price == "-1":
+                    failed_log_data.append([
+                        url_to_scrape,
+                        "No price found in either JSON-LD or HTML",
+                        f"Price: Not found, Old Price: {html_data.get('price_old_raw', '-1')}, Availability: {html_data.get('availability_raw', '-1')}"
+                    ])
 
-                    # Try to get availability information
-                    availability_selector = "section.article.product-detail .item-column .terms"
-                    el = await page.query_selector(availability_selector)
-
-                    if el:
-                        availability_text = await el.inner_text()
-                        availability_text_clean = availability_text
-                except Exception as e:
-                    logger.debug(f"Error extracting availability from DOM: {str(e)}")
-                
-                if is_valid_sku(json_data.get('sku_raw')):
-                    logger.debug(f"Success: {TARGET_BRAND} product found for {url_to_scrape}")
+                if is_valid_sku(final_sku):
+                    logger.debug(f"Success: product found for {url_to_scrape}")
                     return ScrapedItem(
-                        sku_raw=json_data['sku_raw'],
-                        collection=json_data['collection'],
-                        price_raw=json_data['price_raw'],
-                        price_old_raw=json_data['price_old_raw'],
-                        price_promo_raw="-1",
-                        availability_raw=availability_text_clean,
+                        sku_raw=final_sku,
+                        collection=html_data['collection'],
+                        price_raw=final_price,
+                        price_old_raw=html_data['price_old_raw'],
+                        price_promo_raw=html_data['price_promo_raw'],
+                        availability_raw=html_data['availability_raw'],
                         url=url_to_scrape,
                         detection_status="OK"
                     )
             except PlaywrightTimeoutError:
-                logger.warning(f"Timeout waiting for JSON-LD on {url_to_scrape}")
-                # log_failed_urls(failed_log_data)
+                logger.warning(f"Timeout parsing data on {url_to_scrape}")
             except Exception as e:
-                logger.warning(f"Error parsing JSON-LD on {url_to_scrape}: {str(e)}")
-                # log_failed_urls(failed_log_data)
-
-            # 3. Fallback to HTML scraping
-            # If JSON-LD failed, log a warning and capture minimal fallback data
-            logger.info(f"Falling back to HTML scraping for {url_to_scrape}")
-            
-            # Fallback to HTML scraping
-            price_text: str = ""
-            price_old_text: str = ""
-            price_promo_text: str = ""
-            availability_text_clean: str = "-1"
-
-            try:
-                # Try to find PROMO price first
-                promo_el = await page.query_selector(".active-coupon__price")
-                if promo_el:
-                    price_promo_text = await promo_el.inner_text()
-                    
-                # Try to find the new price (using multiple possible selectors)
-                price_selectors = [
-                    # ".active-coupon__price", # REMOVED: Promo price has its own field now
-                    ".price__new",  # Main new price
-                    "span.price",    # Alternative selector
-                    ".product-price" # Another alternative
-                ]
-                for selector in price_selectors:
-                    el = await page.query_selector(selector)
-                    if el:
-                        price_text = await el.inner_text()
-                        break
-                
-                # Try to find the old price
-                old_price_selectors = [
-                    ".price__old",      # Main old price
-                    ".price--old",      # Alternative
-                    ".original-price"   # Another alternative
-                ]
-                for selector in old_price_selectors:
-                    el = await page.query_selector(selector)
-                    if el:
-                        price_old_text = await el.inner_text()
-                        break
-                # Try to get collection info
-                collection = "General"
-                try:
-                    # Strategy A: Breadcrumbs (website specific)
-                    breadcrumb_links = await page.query_selector_all(".breadcrumb__link")
-                    if len(breadcrumb_links) > 1:
-                        # We take the one before the current product name
-                        collection_text = await breadcrumb_links[-2].inner_text()
-                        collection = collection_text.strip()
-                    # Strategy B: If breadcrumbs fail, check Characteristics table
-                    if collection == "General":
-                        # Updated selectors based on HTML inspection
-                        # Note: query_selector returns the first match, which might be a tab button "Колекція Toy's Delight" without spans.
-                        # We must iterate to find the actual characteristic row with value spans.
-                        char_selectors = ["li:has-text('Колекція')","li:has-text('Коллекция')"]
-                        
-                        for selector in char_selectors:
-                            elements = await page.query_selector_all(selector)
-                            for el in elements:
-                                # hierarchy is <li> <span>Label</span> <span>Value</span> </li>
-                                val_el = await el.query_selector("span:last-child")
-                                if val_el:
-                                    text = await val_el.inner_text()
-                                    if text and text.strip():
-                                        collection = text.strip()
-                                        break
-                            if collection != "General":
-                                break
-                except Exception as e:
-                    logger.debug(f"Collection extraction failed: {e}")
-
-                # Try to get availability information
-                availability_selectors = [
-                    "section.article.product-detail .item-column .terms",
-                    "xpath=//div[contains(@class, 'product__delivery')]//*[contains(text(), 'Відправка') or contains(text(), 'В наявності')]",
-                    ".product-info__delivery .terms"
-                ]
-                
-                for selector in availability_selectors:
-                    el = await page.query_selector(selector)
-                    if el:
-                        availability_text = await el.inner_text()
-                        availability_text_clean = availability_text
-                        break
- 
-                # Clean up the prices (remove currency symbols and spaces)
-                price_text = re.sub(r'[^\d.]', '', price_text)
-                if price_old_text:
-                    price_old_text = re.sub(r'[^\d.]', '', price_old_text)
-                if price_promo_text:
-                    price_promo_text = re.sub(r'[^\d.]', '', price_promo_text)
-
-            except Exception as e:
-                logger.debug(f"HTML extraction failed for {url_to_scrape}: {str(e)}")
-
-            # Only log as failure if we couldn't get the current price
-            if not price_text:
-                failed_log_data.append([
-                    url_to_scrape,
-                    "No price found in either JSON-LD or HTML",
-                    f"Price: Not found, Old Price: {price_old_text or 'Not found'}, Availability: {availability_text_clean}"
-                ])
-
-            return ScrapedItem(
-                sku_raw=get_product_id_from_url(url_to_scrape) or "N/A_fallback",
-                collection=collection,
-                price_raw=price_text or "-1",
-                price_old_raw=price_old_text or "-1",
-                price_promo_raw=price_promo_text or "-1",
-                availability_raw=availability_text_clean,
-                url=url_to_scrape,
-                detection_status="OK" # OK means page was reachable, failure was in parsing
-            )
+                logger.warning(f"Error processing data on {url_to_scrape}: {e}")
 
         except PlaywrightTimeoutError:
             logger.warning(f"Timeout {url_to_scrape} (attempt {attempt})")
@@ -973,8 +611,14 @@ async def scrape_single_product(page: Page, url: str, failed_log_data: list, sto
     # Final failure after all retries
     failed_log_data.append([url_to_scrape, "Failed after all retries", "N/A"])
     logger.warning(f"Giving up on {url_to_scrape}")
-    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    return ScrapedItem("N/A_failed", "-1", "Failed", url_to_scrape, current_time, "HTTP_BLOCKED")
+    return ScrapedItem(
+        sku_raw="N/A_failed",
+        collection="General",
+        price_raw=-1.0,
+        availability_raw="Failed",
+        url=url_to_scrape,
+        detection_status="HTTP_BLOCKED"
+    )
 
 def clean_json_string(raw_json_text: str) -> str:
     """
