@@ -10,7 +10,9 @@ This project enables automated price monitoring for a selected set of products, 
 
 - Extracts product data from target websites using browser automation  
 - Processes and structures pricing data  
-- Stores results for analysis and comparison  
+- Stores results for analysis and comparison
+- Captures significant price moves ( flags relative price changes above configurable threshold )
+
 
 Sensitive targets and identifiers are managed securely via environment variables and GitHub Secrets.
 
