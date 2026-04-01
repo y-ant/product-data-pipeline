@@ -20,12 +20,41 @@ def generate_csv_report(records: List[FinalProductRecord], output_path: Path, ru
     """Generates a local CSV report of the final, clean data for this run only."""
     with open(output_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["SKU", "Price", "Old Price", "Promo Price", "Availability", "URL"])
-        writer.writerows([
-            (r.normalized_sku, r.price, r.price_old, r.price_promo, r.availability_code, _strip_base_url(r.url))
-            for r in records
-        ])
+        writer.writerow(["SKU", "Price", "Old Price", "Promo Price", "Availability", "URL", "Changed"])
+        
+        for r in records:
+            changed_str = "No"
+            if r.is_significant_change:
+                sign = "+" if r.price_change_percent > 0 else ""
+                changed_str = f"Yes ({sign}{r.price_change_percent:.1%})"
+                
+            writer.writerow([
+                r.normalized_sku, 
+                r.price, 
+                r.price_old, 
+                r.price_promo, 
+                r.availability_code, 
+                _strip_base_url(r.url),
+                changed_str
+            ])
+            
     logger.info(f"CSV report saved to {output_path.name} with {len(records)} records.")
+
+def export_db_to_csv(db_path: str, output_path: Path) -> None:
+    """Exports the entire price_history table from DuckDB to a CSV file."""
+    import duckdb
+    if not Path(db_path).exists():
+        logger.error(f"Database {db_path} not found. Cannot export.")
+        return
+
+    try:
+        with duckdb.connect(db_path) as con:
+            logger.info(f"Exporting DB {db_path} to {output_path}...")
+            # Use DuckDB's COPY command for efficient CSV export
+            con.execute(f"COPY price_history TO '{output_path}' (HEADER, DELIMITER ',')")
+            logger.info(f"Database exported successfully to {output_path}")
+    except Exception as e:
+        logger.error(f"Failed to export database: {e}")
 
 # --- Placeholder for Google Sheets ---
 def upload_to_google_sheets(records: List[FinalProductRecord], service_account_json: str) -> None:

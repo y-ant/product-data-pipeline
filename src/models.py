@@ -64,3 +64,7 @@ class FinalProductRecord(BaseModel):
     availability_code: str
     url: str
     detection_status: DetectionStatus
+    
+    # Tracking fields (Used for reports, but not stored in DB)
+    is_significant_change: bool = False
+    price_change_percent: float = 0.0

@@ -159,9 +159,28 @@ async def run_scrape_pipeline(limit: int = None):
     # Finalizing
     logger.info(f"Scraping complete. Items found: {len(all_scraped_items)}")
     final_records = filter_scraped_data(all_scraped_items, None)
+
+    # --- PRICE TRACKING LOGIC ---
+    from generic_config import PRICE_CHANGE_THRESHOLD
+    from src.loader import get_latest_prices
+    
+    previous_prices = get_latest_prices(str(DB_FILENAME))
+    
+    if previous_prices:
+        logger.info(f"Loaded {len(previous_prices)} previous prices for comparison.")
+        for record in final_records:
+            prev_price = previous_prices.get(record.normalized_sku)
+            if prev_price is not None and prev_price > 0:
+                diff = (record.price - prev_price) / prev_price
+                record.price_change_percent = diff
+                if abs(diff) >= PRICE_CHANGE_THRESHOLD:
+                    record.is_significant_change = True
+                    logger.info(f"Significant price change for {record.normalized_sku}: {prev_price} -> {record.price} ({diff:+.1%})")
+
+    # Save to database (Raw history)
     insert_data(final_records, str(DB_FILENAME))
 
-    # Generate CSV with this run's prices only
+    # Generate CSV with this run's prices and tracking info
     csv_filename = f"prices_{timestamp}.csv"
     csv_path = OUTPUT_DIR / csv_filename
     generate_csv_report(final_records, csv_path, timestamp)
@@ -178,9 +197,16 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--cron", action="store_true")
+    parser.add_argument("--export-csv", action="store_true", help="Exports the entire DuckDB history to a CSV file.")
     args = parser.parse_args()
 
     async def main():
+        if args.export_csv:
+            from src.reporters import export_db_to_csv
+            from generic_config import EXPORT_CSV_PATH
+            export_db_to_csv(str(DB_FILENAME), EXPORT_CSV_PATH)
+            return
+
         if args.cron:
             delay = abs(random.gauss(0, 3600))
             logger.info(f"Cron Schedule: Delaying start by {delay/60:.1f} minutes.")

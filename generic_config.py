@@ -36,6 +36,10 @@ PAGE_LOAD_TIMEOUT = 30000  # 30 seconds
 MAX_PRODUCT_RETRIES = 3
 BLOCK_RESOURCES = {'image', 'font', 'stylesheet', 'media'}
 
+# Price Tracking Configuration
+PRICE_CHANGE_THRESHOLD = 0.05  # 5% threshold for significant changes
+EXPORT_CSV_PATH = OUTPUT_DIR / "full_price_history.csv"
+
 # Domains to block for performance
 BLOCKED_DOMAINS = [
     '*google-analytics.com*', '*facebook.com*', '*doubleclick.net*', 
