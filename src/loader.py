@@ -10,6 +10,34 @@ from src.models import FinalProductRecord
 
 logger = logging.getLogger(__name__)
 
+def get_latest_prices(db_path: str = "data/prices.duckdb") -> dict:
+    """
+    Fetches the most recent price for each normalized_sku from the price_history table.
+    Returns a dictionary mapping sku to its latest price.
+    """
+    if not Path(db_path).exists():
+        logger.warning(f"Database {db_path} does not exist. No previous prices found.")
+        return {}
+
+    try:
+        with duckdb.connect(db_path) as con:
+            # Query for the latest price for each SKU
+            # We use a subquery to find the max timestamp per SKU
+            query = """
+                SELECT normalized_sku, price
+                FROM price_history
+                WHERE (normalized_sku, timestamp) IN (
+                    SELECT normalized_sku, MAX(timestamp)
+                    FROM price_history
+                    GROUP BY normalized_sku
+                )
+            """
+            rows = con.execute(query).fetchall()
+            return {row[0]: row[1] for row in rows}
+    except Exception as e:
+        logger.error(f"Error fetching latest prices from {db_path}: {e}")
+        return {}
+
 def insert_data(records: List[FinalProductRecord], db_path: str = "prices.duckdb"):
     if not records:
         return 0
